@@ -307,6 +307,52 @@ void GreeYTHeatpumpIR::generateCommand(uint8_t * buffer,
   }
 }
 
+void GreeYAPHeatpumpIR::generateCommand(uint8_t * buffer,
+            uint8_t powerMode, uint8_t operatingMode,
+            uint8_t fanSpeed, uint8_t temperature,
+            uint8_t swingV, uint8_t swingH,
+            bool turboMode, bool iFeelMode) {
+  GreeiFeelHeatpumpIR::generateCommand(buffer,
+      powerMode, operatingMode,
+      fanSpeed, temperature,
+      swingV, swingH,
+      turboMode, iFeelMode);
+
+    buffer[2] = 0x20; // bits 0..3 always 0000, bits 4..7 TURBO,LIGHT,HEALTH,X-FAN
+    buffer[3] = 0x50; // bits 4..7 always 0101
+    buffer[5] = 0x82;
+
+    if (turboMode)
+    {
+      buffer[2] |= GREE_TURBO_BIT;  // Set bit 4 (TURBO)
+    }
+
+    buffer[4] = swingV | (swingH << 4);
+
+    if (iFeelMode)
+    {
+      buffer[5] |= (1 << 2);  // note that this is different than in the other devices
+    }
+
+#if 0
+    if (enableWiFi)
+    {
+      buffer[5] |= (1 << 6);
+    }
+
+    if (sthtMode)
+    {
+      buffer[7] |= (1 << 2);
+    }
+#endif
+
+    memcpy(buffer + 8, buffer, 3);
+    memset(buffer + 8 + 3, 0, 16 - 3);
+    buffer[8 + 3] = 0x70;
+    buffer[16 + 3] = 0xA0;
+    buffer[16 + 7] = 0xA0;
+}
+
 void GreeHeatpumpIR::calculateChecksum(uint8_t * buffer) {
   buffer[7] = (((
    (buffer[0] & 0x0F) +
@@ -326,20 +372,7 @@ void GreeYANHeatpumpIR::calculateChecksum(uint8_t * buffer) {
     0xC0);
 }
 
-// Send the Gree code
-void GreeHeatpumpIR::sendGree(IRSender& IR, uint8_t powerMode, uint8_t operatingMode, uint8_t fanSpeed, uint8_t temperature, uint8_t swingV, uint8_t swingH, bool turboMode, bool iFeelMode)
-{
-  uint8_t GreeTemplate[8];
-
-  generateCommand(
-      GreeTemplate,
-      powerMode, operatingMode,
-      fanSpeed, temperature,
-      swingV, swingH,
-      turboMode, iFeelMode);
-
-  calculateChecksum(GreeTemplate);
-
+void GreeHeatpumpIR::sendBuffer(IRSender& IR, const uint8_t * buffer) {
   const auto & timings = getTimings();
 
   // 38 kHz PWM frequency
@@ -351,7 +384,7 @@ void GreeHeatpumpIR::sendGree(IRSender& IR, uint8_t powerMode, uint8_t operating
 
   // Payload part #1
   for (int i=0; i<4; i++) {
-    IR.sendIRbyte(GreeTemplate[i], timings.bit_mark, timings.zero_space, timings.one_space);
+    IR.sendIRbyte(buffer[i], timings.bit_mark, timings.zero_space, timings.one_space);
   }
   // Only three first bits of byte 4 are sent, this is always '010'
   IR.mark(timings.bit_mark);
@@ -367,12 +400,37 @@ void GreeHeatpumpIR::sendGree(IRSender& IR, uint8_t powerMode, uint8_t operating
 
   // Payload part #2
   for (int i=4; i<8; i++) {
-    IR.sendIRbyte(GreeTemplate[i], timings.bit_mark, timings.zero_space, timings.one_space);
+    IR.sendIRbyte(buffer[i], timings.bit_mark, timings.zero_space, timings.one_space);
   }
 
   // End mark
   IR.mark(timings.bit_mark);
   IR.space(0);
+}
+
+// Send the Gree code
+void GreeHeatpumpIR::sendGree(IRSender& IR, uint8_t powerMode, uint8_t operatingMode, uint8_t fanSpeed, uint8_t temperature, uint8_t swingV, uint8_t swingH, bool turboMode, bool iFeelMode)
+{
+  uint8_t buffer[24];
+
+  generateCommand(
+      buffer,
+      powerMode, operatingMode,
+      fanSpeed, temperature,
+      swingV, swingH,
+      turboMode, iFeelMode);
+
+  for (size_t offset = 0; offset < 24; offset += 8) {
+    calculateChecksum(buffer + offset);
+    sendBuffer(IR, buffer + offset);
+
+    // all blocks except for the first one are followed by a space
+    if (offset) {
+      const auto & timings = getTimings();
+      IR.mark(timings.bit_mark);
+      IR.space(timings.msg_space);
+    }
+  }
 }
 
 // Sends current sensed temperatures, YAC remotes/supporting units only
